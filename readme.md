@@ -55,6 +55,28 @@ To enable compression for snapshots:
     snapshot = Snapshot('/path/to/target/directory', compress=True)
     snapshot.take_snapshot()
 
+## Running Tests
+
+To run the tests for PyFileSnap, follow these steps:
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/emilamaj/pyfilesnap.git
+   cd pyfilesnap
+   ```
+
+2. Install the required dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Run the tests using unittest:
+   ```bash
+   python -m unittest discover tests
+   ```
+
+This will run all the test files in the `tests` directory.
+
 ## Notes
 
 - Snapshot data is stored in a `.pyfilesnap` directory within the target directory.
