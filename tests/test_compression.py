@@ -1,5 +1,5 @@
 import unittest
-from pyfilesnap.compression import compress_data, decompress_data
+from pyfilesnap.utils import compress_data, decompress_data
 
 class TestCompression(unittest.TestCase):
     def test_compression_decompression(self):
