@@ -1,100 +1,74 @@
 import os
 import json
-import base64
+import base64  # Add this import
 from datetime import datetime
-from .diff import create_diff
-from .compression import compress_data
-from .utils import ensure_backup_dir
 from typing import Dict, Union
+from .utils import ensure_backup_dir, collect_files_data, encode_data, decode_data, compress_data, decompress_data
+from .diff import create_diff  # Add this import
+from enum import Enum
+
+class CompressionTier(Enum):
+    NONE = 0
+    MINIMAL = 1
+    MAXIMAL = 2
 
 class Snapshot:
-    """
-    A class for creating and managing snapshots of a directory.
-
-    Args:
-        target_dir (str): The directory to snapshot.
-        backup_dir (str, optional): The directory to store snapshots. Defaults to '.pyfilesnap'.
-        compress (bool, optional): Whether to compress snapshots. Defaults to False.
-    """
-
-    def __init__(self, target_dir: str, backup_dir: str = '.pyfilesnap', compress: bool = False):
+    def __init__(self, target_dir: str, backup_dir: str = '.pyfilesnap', compression: CompressionTier = CompressionTier.NONE):
         self.target_dir = os.path.abspath(target_dir)
         self.backup_dir = os.path.join(self.target_dir, backup_dir)
-        self.compress = compress
+        self.compression = compression
         ensure_backup_dir(self.backup_dir)
 
-    def take_snapshot(self) -> str:
-        """
-        Take a snapshot of the target directory.
+    def _get_snapshot_path(self, snapshot_time: str) -> str:
+        return os.path.join(self.backup_dir, f'snapshot_{snapshot_time}.json')
 
-        Returns:
-            str: The timestamp of the created snapshot.
-        """
+    def _load_snapshot_data(self, snapshot_file: str) -> Dict[str, Union[str, Dict[str, bytes]]]:
+        with open(os.path.join(self.backup_dir, snapshot_file), 'r') as f:
+            snapshot_data = json.load(f)
+        
+        compression = CompressionTier(snapshot_data['compression'])
+        
+        if compression == CompressionTier.MAXIMAL:
+            decompressed_data = decompress_data(base64.b64decode(snapshot_data['data']))
+            decoded_data = json.loads(decompressed_data.decode())
+        elif compression == CompressionTier.MINIMAL:
+            decoded_data = {k: decompress_data(base64.b64decode(v)) for k, v in snapshot_data['data'].items()}
+        else:
+            decoded_data = snapshot_data['data']
+
+        return {k: base64.b64decode(v) for k, v in decoded_data.items()}
+
+    def _save_snapshot_data(self, snapshot_time: str, data: Dict[str, bytes], prev_snapshot: Union[str, None]) -> None:
+        encoded_data = {k: base64.b64encode(v).decode() for k, v in data.items()}
+        
+        if self.compression == CompressionTier.MAXIMAL:
+            compressed_data = compress_data(json.dumps(encoded_data).encode())
+            encoded_data = base64.b64encode(compressed_data).decode()
+        elif self.compression == CompressionTier.MINIMAL:
+            encoded_data = {k: base64.b64encode(compress_data(v.encode())).decode() for k, v in encoded_data.items()}
+
+        snapshot_data = {
+            'time': snapshot_time,
+            'data': encoded_data,
+            'compression': self.compression.value,
+            'prev_snapshot': prev_snapshot
+        }
+
+        with open(self._get_snapshot_path(snapshot_time), 'w') as f:
+            json.dump(snapshot_data, f)
+
+    def take_snapshot(self) -> str:
         snapshot_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        current_data = self._collect_files_data()
+        current_data = collect_files_data(self.target_dir, self.backup_dir)  # Add this line
         
         snapshots = sorted(os.listdir(self.backup_dir))
         if not snapshots:
-            # First snapshot: store full data
             diff_data = current_data
             prev_snapshot = None
         else:
-            # Subsequent snapshots: store diff
             prev_snapshot = snapshots[-1]
-            with open(os.path.join(self.backup_dir, prev_snapshot), 'r') as f:
-                prev_data = json.load(f)
-            prev_files = self._decode_snapshot_data(prev_data['data'])
-            diff_data = create_diff(prev_files, current_data)
+            prev_data = self._load_snapshot_data(prev_snapshot)
+            diff_data = create_diff(prev_data, current_data)
 
-        # Encode binary data as base64 strings
-        encoded_diff_data = {k: base64.b64encode(v).decode('utf-8') for k, v in diff_data.items()}
-        
-        if self.compress:
-            compressed_data = compress_data(json.dumps(encoded_diff_data).encode())
-            encoded_diff_data = base64.b64encode(compressed_data).decode('utf-8')
-        
-        snapshot_path = os.path.join(self.backup_dir, f'snapshot_{snapshot_time}.json')
-        with open(snapshot_path, 'w') as f:
-            json.dump({
-                'time': snapshot_time,
-                'data': encoded_diff_data,
-                'compressed': self.compress,
-                'prev_snapshot': prev_snapshot
-            }, f)
-        
+        self._save_snapshot_data(snapshot_time, diff_data, prev_snapshot)
         return snapshot_time
-
-    def _collect_files_data(self) -> Dict[str, bytes]:
-        """
-        Collect data from all files in the target directory.
-
-        Returns:
-            Dict[str, bytes]: A dictionary mapping relative file paths to their contents.
-        """
-        files_data = {}
-        for root, _, files in os.walk(self.target_dir):
-            if root == self.backup_dir:
-                continue
-            for file in files:
-                file_path = os.path.join(root, file)
-                with open(file_path, 'rb') as f:
-                    files_data[os.path.relpath(file_path, self.target_dir)] = f.read()
-        return files_data
-
-    @staticmethod
-    def _decode_snapshot_data(data: Union[str, Dict[str, str]]) -> Dict[str, bytes]:
-        """
-        Decode snapshot data from base64 strings.
-
-        Args:
-            data (Union[str, Dict[str, str]]): The data to decode.
-
-        Returns:
-            Dict[str, bytes]: A dictionary mapping relative file paths to their contents.
-        """
-        if isinstance(data, str):
-            # Decompress if necessary
-            decompressed_data = json.loads(decompress_data(base64.b64decode(data)).decode())
-        else:
-            decompressed_data = data
-        return {k: base64.b64decode(v) for k, v in decompressed_data.items()}

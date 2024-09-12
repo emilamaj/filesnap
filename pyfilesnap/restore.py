@@ -1,55 +1,25 @@
 import os
 import json
-import base64
+import base64  # Add this import
 from datetime import datetime
-from .diff import apply_diff
-from .compression import decompress_data
-from .utils import ensure_backup_dir
 from typing import Dict, Union, List
+from .utils import ensure_backup_dir, apply_snapshot, decode_data, decompress_data
+from .diff import apply_diff
+from .snapshot import CompressionTier
 
 class Restore:
-    """
-    A class for restoring snapshots of a directory.
-
-    Args:
-        target_dir (str): The directory to restore snapshots to.
-        backup_dir (str, optional): The directory where snapshots are stored. Defaults to '.pyfilesnap'.
-    """
-
     def __init__(self, target_dir: str, backup_dir: str = '.pyfilesnap'):
         self.target_dir = os.path.abspath(target_dir)
         self.backup_dir = os.path.join(self.target_dir, backup_dir)
         ensure_backup_dir(self.backup_dir)
 
     def restore_last(self) -> str:
-        """
-        Restore the most recent snapshot.
-
-        Returns:
-            str: The timestamp of the restored snapshot.
-
-        Raises:
-            ValueError: If no snapshots are found.
-        """
         snapshots = sorted(os.listdir(self.backup_dir), reverse=True)
         if not snapshots:
             raise ValueError("No snapshots found")
         return self._restore_snapshot(snapshots[0])
 
     def restore_to_date(self, target_date: str, direction: str = 'closest') -> str:
-        """
-        Restore to a snapshot closest to the specified date.
-
-        Args:
-            target_date (str): The target date in format "YYYYMMDD_HHMMSS".
-            direction (str, optional): The direction to search ('before', 'after', or 'closest'). Defaults to 'closest'.
-
-        Returns:
-            str: The timestamp of the restored snapshot.
-
-        Raises:
-            ValueError: If no suitable snapshot is found or if an invalid direction is provided.
-        """
         snapshots = sorted(os.listdir(self.backup_dir))
         target_datetime = datetime.strptime(target_date, "%Y%m%d_%H%M%S")
         
@@ -64,86 +34,18 @@ class Restore:
         return self._restore_snapshot(closest_snapshot)
 
     def _restore_snapshot(self, snapshot_file: str) -> str:
-        """
-        Restore a specific snapshot.
-
-        Args:
-            snapshot_file (str): The filename of the snapshot to restore.
-
-        Returns:
-            str: The timestamp of the restored snapshot.
-        """
         snapshot_chain = self._get_snapshot_chain(snapshot_file)
         reconstructed_data = {}
 
         for snapshot in snapshot_chain:
-            with open(os.path.join(self.backup_dir, snapshot), 'r') as f:
-                snapshot_data = json.load(f)
-            
-            diff_data = self._decode_snapshot_data(snapshot_data['data'], snapshot_data['compressed'])
+            snapshot_data = self._load_snapshot_data(snapshot)
+            diff_data = decode_data(snapshot_data['data'])
             reconstructed_data = apply_diff(reconstructed_data, diff_data)
 
-        self._apply_snapshot(reconstructed_data)
+        apply_snapshot(self.target_dir, reconstructed_data)
         return snapshot_data['time']
 
-import os
-import json
-import base64
-from datetime import datetime
-from .diff import apply_diff
-from .compression import decompress_data
-from .utils import ensure_backup_dir
-from typing import Dict, Union
-
-class Restore:
-    """
-    A class for restoring snapshots of a directory.
-
-    Args:
-        target_dir (str): The directory to restore snapshots to.
-        backup_dir (str, optional): The directory where snapshots are stored. Defaults to '.pyfilesnap'.
-    """
-
-    def __init__(self, target_dir: str, backup_dir: str = '.pyfilesnap'):
-        self.target_dir = os.path.abspath(target_dir)
-        self.backup_dir = os.path.join(self.target_dir, backup_dir)
-        ensure_backup_dir(self.backup_dir)
-
-    def restore_last(self) -> str:
-        """
-        Restore the most recent snapshot.
-
-        Returns:
-            str: The timestamp of the restored snapshot.
-
-        Raises:
-            ValueError: If no snapshots are found.
-        """
-        snapshots = sorted(os.listdir(self.backup_dir), reverse=True)
-        if not snapshots:
-            raise ValueError("No snapshots found")
-        return self._restore_snapshot(snapshots[0])
-
-    def restore_to_date(self, target_date: str, direction: str = 'closest') -> str:
-        """
-        Restore to a snapshot closest to the specified date.
-
-        Args:
-            target_date (str): The target date in format "YYYYMMDD_HHMMSS".
-            direction (str, optional): The direction to search ('before', 'after', or 'closest'). Defaults to 'closest'.
-
-        Returns:
-            str: The timestamp of the restored snapshot.
-
-        Raises:
-            ValueError: If no suitable snapshot is found or if an invalid direction is provided.
-        """
-        snapshots = sorted(os.listdir(self.backup_dir))
-        target_datetime = datetime.strptime(target_date, "%Y%m%d_%H%M%S")
-        
-        if direction not in ['before', 'after', 'closest']:
-            raise ValueError("Invalid direction. Choose 'before', 'after', or 'closest'.")
-
+    def _find_closest_snapshot(self, snapshots: List[str], target_datetime: datetime, direction: str) -> Union[str, None]:
         closest_snapshot = None
         smallest_time_diff = float('inf')
 
@@ -168,43 +70,29 @@ class Restore:
                     closest_snapshot = snapshot
                 # For 'closest', we keep the earlier snapshot (no change needed)
         
-        if closest_snapshot is None:
-            raise ValueError(f"No suitable snapshot found {direction} the specified date")
-        
-        return self._restore_snapshot(closest_snapshot)
+        return closest_snapshot
 
-    def _restore_snapshot(self, snapshot_file: str) -> str:
-        """
-        Restore a specific snapshot.
+    def _get_snapshot_chain(self, snapshot_file: str) -> List[str]:
+        snapshot_chain = []
+        current_snapshot = snapshot_file
 
-        Args:
-            snapshot_file (str): The filename of the snapshot to restore.
+        while current_snapshot is not None:
+            snapshot_chain.append(current_snapshot)
+            snapshot_data = self._load_snapshot_data(current_snapshot)
+            current_snapshot = snapshot_data['prev_snapshot']
 
-        Returns:
-            str: The timestamp of the restored snapshot.
-        """
+        return snapshot_chain[::-1]
+
+    def _load_snapshot_data(self, snapshot_file: str) -> Dict[str, Union[str, Dict[str, bytes]]]:
         with open(os.path.join(self.backup_dir, snapshot_file), 'r') as f:
             snapshot_data = json.load(f)
         
-        if snapshot_data['compressed']:
-            compressed_data = base64.b64decode(snapshot_data['data'])
-            snapshot_data['data'] = json.loads(decompress_data(compressed_data).decode())
+        compression = CompressionTier(snapshot_data['compression'])
         
-        # Decode base64 strings back to bytes
-        decoded_data = {k: base64.b64decode(v) for k, v in snapshot_data['data'].items()}
-        
-        self._apply_snapshot(decoded_data)
-        return snapshot_data['time']
+        if compression == CompressionTier.MAXIMAL:
+            decompressed_data = decompress_data(base64.b64decode(snapshot_data['data']))
+            snapshot_data['data'] = json.loads(decompressed_data.decode())
+        elif compression == CompressionTier.MINIMAL:
+            snapshot_data['data'] = {k: decompress_data(base64.b64decode(v)).decode() for k, v in snapshot_data['data'].items()}
 
-    def _apply_snapshot(self, snapshot_data: Dict[str, bytes]) -> None:
-        """
-        Apply the snapshot data to the target directory.
-
-        Args:
-            snapshot_data (Dict[str, bytes]): The snapshot data to apply.
-        """
-        for file_path, content in snapshot_data.items():
-            full_path = os.path.join(self.target_dir, file_path)
-            os.makedirs(os.path.dirname(full_path), exist_ok=True)
-            with open(full_path, 'wb') as f:
-                f.write(content)
+        return snapshot_data
