@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import json
 import urllib.parse
-from pyfilesnap.snapshot import Snapshot
+from pyfilesnap.snapshot import Snapshot, SnapshotConfig
 from pyfilesnap.utils import extract_archive, decode_data  # Add decode_data import
 from pyfilesnap.diff import create_diff, apply_diff  # Add apply_diff import here
 import logging
@@ -34,12 +34,13 @@ class TestSnapshot(unittest.TestCase):
         snapshot = Snapshot(self.test_dir)
         self.assertEqual(snapshot.target_dir, os.path.abspath(self.test_dir))
         self.assertEqual(snapshot.backup_dir, os.path.join(self.test_dir, '.pyfilesnap'))
-        self.assertFalse(snapshot.compress)
+        self.assertFalse(snapshot.config.compress)
 
     def test_snapshot_initialization_with_compression(self):
         # Test if Snapshot object is initialized correctly with compression
-        snapshot = Snapshot(self.test_dir, compress=True)
-        self.assertTrue(snapshot.compress)
+        config = SnapshotConfig(compress=True)
+        snapshot = Snapshot(self.test_dir, config=config)
+        self.assertTrue(snapshot.config.compress)
 
     def test_snapshot_creation_uncompressed(self):
         # Test creation of an uncompressed snapshot
@@ -53,7 +54,8 @@ class TestSnapshot(unittest.TestCase):
     def test_snapshot_creation_compressed(self):
         # Test creation of a compressed snapshot
         self._create_test_file()
-        snapshot = Snapshot(self.test_dir, compress=True)
+        config = SnapshotConfig(compress=True)
+        snapshot = Snapshot(self.test_dir, config=config)
         snapshot_time = snapshot.take_snapshot()
 
         archive_path = os.path.join(self.test_dir, '.pyfilesnap', 'snapshots.tar.gz')
@@ -76,7 +78,8 @@ class TestSnapshot(unittest.TestCase):
     def test_snapshot_content_compressed(self):
         # Test the content of a compressed snapshot
         self._create_test_file()
-        snapshot = Snapshot(self.test_dir, compress=True)
+        config = SnapshotConfig(compress=True)
+        snapshot = Snapshot(self.test_dir, config=config)
         snapshot_time = snapshot.take_snapshot()
 
         archive_path = os.path.join(self.test_dir, '.pyfilesnap', 'snapshots.tar.gz')
@@ -103,7 +106,8 @@ class TestSnapshot(unittest.TestCase):
 
     def test_multiple_snapshots_compressed(self):
         # Test creation of multiple compressed snapshots
-        snapshot = Snapshot(self.test_dir, compress=True)
+        config = SnapshotConfig(compress=True)
+        snapshot = Snapshot(self.test_dir, config=config)
         
         self._create_test_file('file1.txt', 'Initial content')
         snapshot_time1 = snapshot.take_snapshot()
