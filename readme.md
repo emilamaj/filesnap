@@ -8,7 +8,7 @@ PyFileSnap is a lightweight Python library that allows users to take snapshots o
 - Restore to the previous snapshot
 - Restore to the closest snapshot before/after a specified date
 - Optimized storage using diff-based snapshots
-- Optional light compression for snapshot data
+- Optional compression for snapshot data using a single archive file
 
 ## Installation
 
@@ -54,6 +54,8 @@ To enable compression for snapshots:
 
     snapshot = Snapshot('/path/to/target/directory', compress=True)
     snapshot.take_snapshot()
+
+When compression is enabled, PyFileSnap creates a single archive file for the initial snapshot and adds each subsequent diff to this archive. This approach optimizes storage and simplifies the snapshot structure.
 
 ## Running Tests
 

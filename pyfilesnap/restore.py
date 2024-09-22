@@ -1,62 +1,51 @@
 import os
 import json
-import base64  # Add this import
 from datetime import datetime
-from typing import Dict, Union, List
-from .utils import ensure_backup_dir, apply_snapshot, decode_data, decompress_data
-from .diff import apply_diff
-from .snapshot import CompressionTier
+from typing import List, Union
+from .utils import apply_snapshot, decode_data, extract_archive
+from .snapshot import Snapshot
+import logging
 
 class Restore:
     def __init__(self, target_dir: str, backup_dir: str = '.pyfilesnap'):
         self.target_dir = os.path.abspath(target_dir)
         self.backup_dir = os.path.join(self.target_dir, backup_dir)
-        ensure_backup_dir(self.backup_dir)
+        self.snapshot = Snapshot(target_dir, backup_dir)
 
-    def restore_last(self) -> str:
-        try:
-            snapshots = sorted(os.listdir(self.backup_dir), reverse=True)
-            if not snapshots:
-                raise ValueError("No snapshots found")
-            return self._restore_snapshot(snapshots[0])
-        except Exception as e:
-            print(f"Error restoring last snapshot: {str(e)}")
-            raise
-
-    def restore_to_date(self, target_date: str, direction: str = 'closest') -> str:
-        try:
-            snapshots = sorted(os.listdir(self.backup_dir))
-            target_datetime = datetime.strptime(target_date, "%Y%m%d_%H%M%S")
-            
-            if direction not in ['before', 'after', 'closest']:
-                raise ValueError("Invalid direction. Choose 'before', 'after', or 'closest'.")
-
-            closest_snapshot = self._find_closest_snapshot(snapshots, target_datetime, direction)
-            
-            if closest_snapshot is None:
-                raise ValueError(f"No suitable snapshot found {direction} the specified date")
-            
+    def restore_to_date(self, target_date: str, direction: str = 'exact') -> bool:
+        target_datetime = datetime.strptime(target_date, "%Y%m%d_%H%M%S")
+        snapshots = self._get_snapshots()
+        
+        closest_snapshot = self._find_closest_snapshot(snapshots, target_datetime, direction)
+        
+        if closest_snapshot:
             return self._restore_snapshot(closest_snapshot)
-        except Exception as e:
-            print(f"Error restoring to date: {str(e)}")
-            raise
+        return False
 
-    def _restore_snapshot(self, snapshot_file: str) -> str:
-        try:
-            snapshot_chain = self._get_snapshot_chain(snapshot_file)
-            reconstructed_data = {}
+    def _restore_snapshot(self, snapshot_file: str) -> bool:
+        snapshot_chain = self._get_snapshot_chain(snapshot_file)
+        logging.debug(f"Restoring snapshot chain: {snapshot_chain}")
+        full_state = {}
+        
+        for snapshot in snapshot_chain:
+            snapshot_data = self._load_snapshot_data(snapshot)
+            diff_data = decode_data(snapshot_data['data'])
+            full_state.update(diff_data)
+        
+        apply_snapshot(self.target_dir, full_state)
+        return True
 
-            for snapshot in snapshot_chain:
-                snapshot_data = self._load_snapshot_data(snapshot)
-                diff_data = decode_data(snapshot_data['data'])
-                reconstructed_data = apply_diff(reconstructed_data, diff_data)
-
-            apply_snapshot(self.target_dir, reconstructed_data)
-            print(f"Restored to snapshot {snapshot_data['time']}")
-            return snapshot_data['time']
-        except Exception as e:
-            print(f"Error restoring snapshot: {str(e)}")
-            raise
+    def _get_snapshots(self) -> List[str]:
+        snapshots = []
+        if os.path.exists(os.path.join(self.backup_dir, 'snapshots.tar.gz')):
+            with open(os.path.join(self.backup_dir, 'snapshots.tar.gz'), 'rb') as f:
+                archive_data = f.read()
+            extracted_data = extract_archive(archive_data)
+            snapshots = sorted(extracted_data.keys())
+        else:
+            snapshots = sorted([f for f in os.listdir(self.backup_dir) if f.startswith('snapshot_') and f.endswith('.json')])
+        logging.debug(f"Found snapshots: {snapshots}")
+        return snapshots
 
     def _find_closest_snapshot(self, snapshots: List[str], target_datetime: datetime, direction: str) -> Union[str, None]:
         closest_snapshot = None
@@ -75,11 +64,7 @@ class Restore:
             if abs_time_diff < smallest_time_diff:
                 smallest_time_diff = abs_time_diff
                 closest_snapshot = snapshot
-            elif abs_time_diff == smallest_time_diff:
-                if direction == 'after' and time_diff > 0:
-                    closest_snapshot = snapshot
-                elif direction == 'before' and time_diff < 0:
-                    closest_snapshot = snapshot
+                logging.debug(f"Closest snapshot found: {closest_snapshot}")
         
         return closest_snapshot
 
@@ -88,28 +73,22 @@ class Restore:
         current_snapshot = snapshot_file
 
         while current_snapshot is not None:
+            if current_snapshot in snapshot_chain:
+                print(f"Circular reference detected in snapshot chain: {current_snapshot}")
+                break
             snapshot_chain.append(current_snapshot)
             snapshot_data = self._load_snapshot_data(current_snapshot)
-            current_snapshot = snapshot_data['prev_snapshot']
+            current_snapshot = snapshot_data.get('prev_snapshot')
 
         return snapshot_chain[::-1]
 
-    def _load_snapshot_data(self, snapshot_file: str) -> Dict[str, Union[str, Dict[str, bytes]]]:
-        try:
-            with open(os.path.join(self.backup_dir, snapshot_file), 'r') as f:
-                snapshot_data = json.load(f)
-            
-            compression = CompressionTier(snapshot_data['compression'])
-            
-            if compression == CompressionTier.MAXIMAL:
-                decompressed_data = decompress_data(base64.b64decode(snapshot_data['data']))
-                decoded_data = json.loads(decompressed_data.decode())
-            elif compression == CompressionTier.MINIMAL:
-                decoded_data = {k: decompress_data(base64.b64decode(v)) for k, v in snapshot_data['data'].items()}
-            else:
-                decoded_data = snapshot_data['data']
+    def _load_snapshot_data(self, snapshot_file: str) -> dict:
+        return self.snapshot._load_snapshot_data(snapshot_file)
 
-            return {k: base64.b64decode(v) for k, v in decoded_data.items()}
-        except Exception as e:
-            print(f"Error loading snapshot data: {str(e)}")
-            raise
+    def restore_last(self) -> str:
+        snapshots = self._get_snapshots()
+        if not snapshots:
+            raise ValueError("No snapshots found")
+        
+        latest_snapshot = snapshots[-1]
+        return self._restore_snapshot(latest_snapshot)
